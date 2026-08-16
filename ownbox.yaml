@@ -1,0 +1,25 @@
+schema: 1
+name: canrun
+description: Check how well an application or game will run on this computer.
+tags: [cli, hardware, games, system-requirements, gemini, linux, macos, windows]
+install:
+  platforms: [linux, darwin, windows]
+  setup:
+    linux:
+      - python -m venv .venv
+      - .venv/bin/python -m pip install -e .
+    darwin:
+      - python -m venv .venv
+      - .venv/bin/python -m pip install -e .
+    windows:
+      - python -m venv .venv
+      - '.venv\Scripts\python.exe -m pip install -e .'
+  update:
+    linux: [.venv/bin/python -m pip install -e .]
+    darwin: [.venv/bin/python -m pip install -e .]
+    windows: ['.venv\Scripts\python.exe -m pip install -e .']
+  remove: []
+command:
+  linux: .venv/bin/canrun
+  darwin: .venv/bin/canrun
+  windows: '.venv\Scripts\canrun.exe'
