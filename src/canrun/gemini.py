@@ -101,6 +101,44 @@ def _grounding_sources(payload: dict) -> list[dict[str, str]]:
     return sources
 
 
+def _used_google_search(payload: dict) -> bool:
+    """Verify that grounding came from an actual Google Search invocation."""
+    if any(step.get("type") == "google_search_call" for step in payload.get("steps") or []):
+        return True
+
+    # A generateContent response has no explicit call step. Non-empty grounding chunks are
+    # emitted only when Google Search grounding ran, so retain compatibility with that shape.
+    candidates = payload.get("candidates") or []
+    metadata = candidates[0].get("groundingMetadata") or {} if candidates else {}
+    return bool(metadata.get("groundingChunks"))
+
+
+def _retry_prompt(prompt: str, error: Exception) -> str:
+    detail = str(error)
+    if "did not invoke Google Search" in detail:
+        correction = (
+            "The previous attempt answered without invoking Google Search. Invoke the "
+            "google_search tool before producing the JSON response, even if you believe you "
+            "already know the answer."
+        )
+    elif "returned no cited sources" in detail:
+        correction = (
+            "The previous attempt searched but did not cite its evidence. Base factual claims on "
+            "the search results and attach URL citations to the final JSON response."
+        )
+    elif isinstance(error, InvalidGeminiResponse):
+        correction = (
+            f"The previous response failed validation: {detail}. Correct that exact problem while "
+            "preserving every requested JSON key and using only supported values."
+        )
+    else:
+        correction = (
+            "The previous request failed transiently. Perform the requested Google Search again "
+            "and return the complete JSON response."
+        )
+    return f"{prompt}\n\nRETRY CORRECTION (mandatory): {correction}\n"
+
+
 def validate_requirements(data: dict) -> None:
     required = ("application", "minimum", "recommended", "sources", "confidence", "warnings")
     missing = [key for key in required if key not in data]
@@ -187,7 +225,8 @@ class GeminiClient:
         body = {
             "model": self.model,
             "input": prompt,
-            "tools": [{"type": "google_search"}],
+            "tools": [{"type": "google_search", "search_types": ["web_search"]}],
+            "generation_config": {"tool_choice": "any"},
         }
         request = urllib.request.Request(
             url,
@@ -232,19 +271,22 @@ class GeminiClient:
         progress: Callable[[str], None] | None = None,
     ) -> GroundedResult:
         last_error: Exception | None = None
+        attempt_prompt = prompt
         for attempt in range(1, max_attempts + 1):
             if progress:
                 suffix = f" (attempt {attempt}/{max_attempts})" if attempt > 1 else ""
                 progress(f"Gemini {stage}{suffix}…")
             try:
-                payload = self._request(prompt)
-                data = extract_json(_response_text(payload))
-                validator(data)
+                payload = self._request(attempt_prompt)
+                if not _used_google_search(payload):
+                    raise InvalidGeminiResponse("Gemini did not invoke Google Search")
                 sources = _grounding_sources(payload)
                 if not sources:
                     raise InvalidGeminiResponse(
-                        "Gemini did not return Google Search grounding evidence"
+                        "Gemini invoked Google Search but returned no cited sources"
                     )
+                data = extract_json(_response_text(payload))
+                validator(data)
                 return GroundedResult(data, sources, attempt)
             except (GeminiError, InvalidGeminiResponse) as exc:
                 last_error = exc
@@ -255,6 +297,7 @@ class GeminiClient:
                     break
                 if progress:
                     progress(f"{stage.capitalize()} attempt failed: {exc}; retrying")
+                attempt_prompt = _retry_prompt(prompt, exc)
                 time.sleep(min(2 ** (attempt - 1), 4))
         raise GeminiError(f"{stage} failed after {max_attempts} attempts: {last_error}")
 

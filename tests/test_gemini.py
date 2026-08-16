@@ -16,6 +16,11 @@ def _payload(text):
     return {
         "steps": [
             {
+                "type": "google_search_call",
+                "id": "search-1",
+                "arguments": {"queries": ["official requirements"]},
+            },
+            {
                 "type": "model_output",
                 "content": [
                     {
@@ -62,6 +67,58 @@ def test_call_stops_after_attempt_limit(monkeypatch):
         client.call_json("prompt", "stage", lambda data: None, max_attempts=2)
 
 
+def test_call_retries_with_search_specific_correction(monkeypatch):
+    client = GeminiClient("key", "model")
+    no_search = _payload('{"ok": true}')
+    no_search["steps"] = [
+        step for step in no_search["steps"] if step["type"] != "google_search_call"
+    ]
+    prompts = []
+    responses = iter([no_search, _payload('{"ok": true}')])
+
+    def request(prompt):
+        prompts.append(prompt)
+        return next(responses)
+
+    monkeypatch.setattr(client, "_request", request)
+    monkeypatch.setattr("canrun.gemini.time.sleep", lambda delay: None)
+
+    result = client.call_json("base prompt", "stage", lambda data: None)
+
+    assert result.attempts == 2
+    assert prompts[0] == "base prompt"
+    assert "previous attempt answered without invoking Google Search" in prompts[1]
+
+
+def test_call_retries_with_citation_specific_correction(monkeypatch):
+    client = GeminiClient("key", "model")
+    no_citations = _payload('{"ok": true}')
+    no_citations["steps"][1]["content"][0]["annotations"] = []
+    prompts = []
+    responses = iter([no_citations, _payload('{"ok": true}')])
+    monkeypatch.setattr(
+        client,
+        "_request",
+        lambda prompt: prompts.append(prompt) or next(responses),
+    )
+    monkeypatch.setattr("canrun.gemini.time.sleep", lambda delay: None)
+
+    client.call_json("base prompt", "stage", lambda data: None)
+
+    assert "previous attempt searched but did not cite its evidence" in prompts[1]
+
+
+def test_citations_without_search_invocation_are_rejected(monkeypatch):
+    client = GeminiClient("key", "model")
+    payload = _payload('{"ok": true}')
+    payload["steps"] = [step for step in payload["steps"] if step["type"] != "google_search_call"]
+    monkeypatch.setattr(client, "_request", lambda prompt: payload)
+    monkeypatch.setattr("canrun.gemini.time.sleep", lambda delay: None)
+
+    with pytest.raises(GeminiError, match="did not invoke Google Search"):
+        client.call_json("prompt", "stage", lambda data: None, max_attempts=1)
+
+
 def test_invalid_non_object_json_is_rejected():
     with pytest.raises(InvalidGeminiResponse):
         extract_json(json.dumps([1, 2]))
@@ -94,5 +151,6 @@ def test_request_uses_interactions_api(monkeypatch):
     assert json.loads(request.data) == {
         "model": "gemini-3.6-flash",
         "input": "research this",
-        "tools": [{"type": "google_search"}],
+        "tools": [{"type": "google_search", "search_types": ["web_search"]}],
+        "generation_config": {"tool_choice": "any"},
     }
