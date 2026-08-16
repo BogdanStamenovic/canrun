@@ -5,7 +5,8 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-DEFAULT_MODEL = "gemini-2.5-flash"
+DEFAULT_MODEL = "gemini-3.6-flash"
+RETIRED_DEFAULT_MODELS = {"gemini-2.5-flash"}
 
 
 class ConfigError(RuntimeError):
@@ -42,9 +43,10 @@ class Config:
                 raise ConfigError(f"{path} must contain a JSON object")
             data = loaded
         env_key = os.environ.get("GEMINI_API_KEY")
+        stored_model = str(data.get("model") or DEFAULT_MODEL)
         return cls(
             api_key=env_key or data.get("api_key"),
-            model=str(data.get("model") or DEFAULT_MODEL),
+            model=DEFAULT_MODEL if stored_model in RETIRED_DEFAULT_MODELS else stored_model,
         )
 
     def require_key(self) -> str:

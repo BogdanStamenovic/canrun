@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import time
 import urllib.error
-import urllib.parse
 import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -49,6 +48,18 @@ def extract_json(text: str) -> dict:
 
 
 def _response_text(payload: dict) -> str:
+    steps = payload.get("steps") or []
+    text = "\n".join(
+        str(block.get("text", ""))
+        for step in steps
+        if step.get("type") == "model_output"
+        for block in step.get("content") or []
+        if block.get("type") == "text" and block.get("text")
+    )
+    if text.strip():
+        return text
+
+    # Accept generateContent responses so cached fixtures and older callers remain readable.
     candidates = payload.get("candidates") or []
     if not candidates:
         feedback = payload.get("promptFeedback") or {}
@@ -62,10 +73,25 @@ def _response_text(payload: dict) -> str:
 
 
 def _grounding_sources(payload: dict) -> list[dict[str, str]]:
-    candidates = payload.get("candidates") or []
-    metadata = candidates[0].get("groundingMetadata") or {} if candidates else {}
     sources: list[dict[str, str]] = []
     seen: set[str] = set()
+    for step in payload.get("steps") or []:
+        if step.get("type") != "model_output":
+            continue
+        for block in step.get("content") or []:
+            for annotation in block.get("annotations") or []:
+                if annotation.get("type") != "url_citation":
+                    continue
+                uri = str(annotation.get("url") or "").strip()
+                if uri and uri not in seen:
+                    seen.add(uri)
+                    sources.append({"title": str(annotation.get("title") or uri), "url": uri})
+    if sources:
+        return sources
+
+    # Fall back to the generateContent grounding shape for backwards compatibility.
+    candidates = payload.get("candidates") or []
+    metadata = candidates[0].get("groundingMetadata") or {} if candidates else {}
     for chunk in metadata.get("groundingChunks") or []:
         web = chunk.get("web") or {}
         uri = str(web.get("uri") or "").strip()
@@ -157,11 +183,11 @@ class GeminiClient:
         self.timeout = timeout
 
     def _request(self, prompt: str) -> dict:
-        model = urllib.parse.quote(self.model, safe="._-")
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+        url = "https://generativelanguage.googleapis.com/v1/interactions"
         body = {
-            "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-            "tools": [{"google_search": {}}],
+            "model": self.model,
+            "input": prompt,
+            "tools": [{"type": "google_search"}],
         }
         request = urllib.request.Request(
             url,

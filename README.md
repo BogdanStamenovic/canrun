@@ -87,12 +87,12 @@ useful for ephemeral or managed environments.
 
 ```console
 canrun config show
-canrun config set-model gemini-2.5-flash
+canrun config set-model gemini-3.6-flash
 canrun config clear-key
 ```
 
-The default is `gemini-2.5-flash`, because its current free tier includes a limited Search-grounding
-allowance. Gemini availability, quotas, and pricing can change, so the model is configurable.
+The default is `gemini-3.6-flash`. Can Run uses Google's Interactions API with Search grounding.
+Gemini availability, quotas, and pricing can change, so the model is configurable.
 See Google's [Gemini pricing](https://ai.google.dev/gemini-api/docs/pricing) and
 [Search grounding](https://ai.google.dev/gemini-api/docs/google-search) documentation for current
 availability and limits.

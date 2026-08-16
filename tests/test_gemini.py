@@ -1,4 +1,6 @@
 import json
+import urllib.request
+from io import BytesIO
 
 import pytest
 
@@ -12,14 +14,22 @@ from canrun.gemini import (
 
 def _payload(text):
     return {
-        "candidates": [
+        "steps": [
             {
-                "content": {"parts": [{"text": text}]},
-                "groundingMetadata": {
-                    "groundingChunks": [
-                        {"web": {"title": "Official", "uri": "https://example.test"}}
-                    ]
-                },
+                "type": "model_output",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": text,
+                        "annotations": [
+                            {
+                                "type": "url_citation",
+                                "title": "Official",
+                                "url": "https://example.test",
+                            }
+                        ],
+                    }
+                ],
             }
         ]
     }
@@ -55,3 +65,34 @@ def test_call_stops_after_attempt_limit(monkeypatch):
 def test_invalid_non_object_json_is_rejected():
     with pytest.raises(InvalidGeminiResponse):
         extract_json(json.dumps([1, 2]))
+
+
+def test_request_uses_interactions_api(monkeypatch):
+    captured = {}
+
+    class Response(BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            self.close()
+
+    def urlopen(request, timeout):
+        captured["request"] = request
+        captured["timeout"] = timeout
+        return Response(b'{"steps": []}')
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    client = GeminiClient("key", "gemini-3.6-flash", timeout=12)
+
+    client._request("research this")
+
+    request = captured["request"]
+    assert request.full_url == "https://generativelanguage.googleapis.com/v1/interactions"
+    assert captured["timeout"] == 12
+    assert request.get_header("X-goog-api-key") == "key"
+    assert json.loads(request.data) == {
+        "model": "gemini-3.6-flash",
+        "input": "research this",
+        "tools": [{"type": "google_search"}],
+    }
