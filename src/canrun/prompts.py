@@ -85,9 +85,11 @@ values. Use null and explain uncertainty in warnings when reliable information i
 Application supplied by the user: {application!r}
 Host platform: {platform_name!r}
 
-Return ONLY one valid JSON object. Do not use Markdown fences or prose. Preserve every key in
-this shape, replacing the example values. Minimum and recommended may each be null only when no
-such tier is published. Numeric capacities must be numbers in GB, not strings.
+After searching, call submit_grounded_result exactly once. Put ONLY one valid JSON object in its
+json_result argument, without Markdown fences or prose, and put every exact evidence URL in its
+source_urls argument. Preserve every key in this shape, replacing the example values. Minimum and
+recommended may each be null only when no such tier is published. Numeric capacities must be
+numbers in GB, not strings.
 
 {json.dumps(REQUIREMENTS_SHAPE, indent=2)}
 """
@@ -124,6 +126,8 @@ If evidence is weak, use null FPS values and lower confidence instead of inventi
 Input data:
 {json.dumps(payload, indent=2, ensure_ascii=False)}
 
-Return ONLY one valid JSON object with every key in this shape. Do not use Markdown fences or prose:
+After searching, call submit_grounded_result exactly once. Put ONLY one valid JSON object with every
+key in this shape in its json_result argument, without Markdown fences or prose, and put every exact
+evidence URL in its source_urls argument:
 {json.dumps(REPORT_SHAPE, indent=2)}
 """

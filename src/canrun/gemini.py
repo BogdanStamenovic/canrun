@@ -89,6 +89,21 @@ def _grounding_sources(payload: dict) -> list[dict[str, str]]:
     if sources:
         return sources
 
+    # Forced structured submissions are function calls rather than model-output text, so they
+    # cannot carry url_citation annotations. Preserve the URLs the model submits from its Search
+    # context, while _used_google_search independently proves that Search actually ran first.
+    for step in payload.get("steps") or []:
+        if step.get("type") != "function_call" or step.get("name") != "submit_grounded_result":
+            continue
+        arguments = step.get("arguments") or {}
+        for value in arguments.get("source_urls") or []:
+            uri = str(value).strip()
+            if uri.startswith(("https://", "http://")) and uri not in seen:
+                seen.add(uri)
+                sources.append({"title": uri, "url": uri})
+    if sources:
+        return sources
+
     # Fall back to the generateContent grounding shape for backwards compatibility.
     candidates = payload.get("candidates") or []
     metadata = candidates[0].get("groundingMetadata") or {} if candidates else {}
@@ -111,6 +126,23 @@ def _used_google_search(payload: dict) -> bool:
     candidates = payload.get("candidates") or []
     metadata = candidates[0].get("groundingMetadata") or {} if candidates else {}
     return bool(metadata.get("groundingChunks"))
+
+
+def _submitted_text(payload: dict) -> str:
+    calls = [
+        step
+        for step in payload.get("steps") or []
+        if step.get("type") == "function_call"
+        and step.get("name") == "submit_grounded_result"
+    ]
+    if not calls:
+        # Retain support for old fixtures and generateContent-shaped responses.
+        return _response_text(payload)
+    arguments = calls[-1].get("arguments") or {}
+    value = arguments.get("json_result")
+    if not isinstance(value, str) or not value.strip():
+        raise InvalidGeminiResponse("submit_grounded_result omitted json_result")
+    return value
 
 
 def _retry_prompt(prompt: str, error: Exception) -> str:
@@ -220,12 +252,54 @@ class GeminiClient:
         self.model = model
         self.timeout = timeout
 
-    def _request(self, prompt: str) -> dict:
+    def _request(self, prompt: str, stage: str = "research") -> dict:
+        model_name = self.model.rsplit("/", 1)[-1]
+        if not model_name.startswith("gemini-3"):
+            raise GeminiError(
+                f"model {self.model!r} cannot force grounded submission; "
+                "select a Gemini 3 model with 'canrun config set-model gemini-3.6-flash'"
+            )
         url = "https://generativelanguage.googleapis.com/v1/interactions"
+        submit_tool = {
+            "type": "function",
+            "name": "submit_grounded_result",
+            "description": (
+                f"Submit the final {stage} JSON only after invoking Google Search. "
+                "Never call this function before google_search."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "json_result": {
+                        "type": "string",
+                        "description": "The complete valid JSON object requested by the user.",
+                    },
+                    "source_urls": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "Exact HTTP(S) source URLs used from the Google Search results."
+                        ),
+                    },
+                },
+                "required": ["json_result", "source_urls"],
+            },
+        }
         body = {
             "model": self.model,
             "input": prompt,
-            "tools": [{"type": "google_search", "search_types": ["web_search"]}],
+            "tools": [
+                {"type": "google_search", "search_types": ["web_search"]},
+                submit_tool,
+            ],
+            "generation_config": {
+                "tool_choice": {
+                    "allowed_tools": {
+                        "mode": "any",
+                        "tools": ["submit_grounded_result"],
+                    }
+                }
+            },
         }
         request = urllib.request.Request(
             url,
@@ -276,7 +350,7 @@ class GeminiClient:
                 suffix = f" (attempt {attempt}/{max_attempts})" if attempt > 1 else ""
                 progress(f"Gemini {stage}{suffix}…")
             try:
-                payload = self._request(attempt_prompt)
+                payload = self._request(attempt_prompt, stage)
                 if not _used_google_search(payload):
                     raise InvalidGeminiResponse("Gemini did not invoke Google Search")
                 sources = _grounding_sources(payload)
@@ -284,7 +358,7 @@ class GeminiClient:
                     raise InvalidGeminiResponse(
                         "Gemini invoked Google Search but returned no cited sources"
                     )
-                data = extract_json(_response_text(payload))
+                data = extract_json(_submitted_text(payload))
                 validator(data)
                 return GroundedResult(data, sources, attempt)
             except (GeminiError, InvalidGeminiResponse) as exc:

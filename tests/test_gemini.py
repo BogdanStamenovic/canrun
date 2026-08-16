@@ -41,6 +41,19 @@ def _payload(text):
     }
 
 
+def _function_payload(text):
+    payload = _payload(text)
+    payload["steps"][-1] = {
+        "type": "function_call",
+        "name": "submit_grounded_result",
+        "arguments": {
+            "json_result": text,
+            "source_urls": ["https://example.test"],
+        },
+    }
+    return payload
+
+
 def test_extract_json_accepts_plain_and_fenced_objects():
     assert extract_json('{"ok": true}') == {"ok": True}
     assert extract_json('```json\n{"ok": true}\n```') == {"ok": True}
@@ -48,8 +61,8 @@ def test_extract_json_accepts_plain_and_fenced_objects():
 
 def test_call_retries_until_a_valid_success(monkeypatch):
     client = GeminiClient("key", "model")
-    responses = iter([_payload("not json"), _payload('{"ok": true}')])
-    monkeypatch.setattr(client, "_request", lambda prompt: next(responses))
+    responses = iter([_function_payload("not json"), _function_payload('{"ok": true}')])
+    monkeypatch.setattr(client, "_request", lambda prompt, stage: next(responses))
     monkeypatch.setattr("canrun.gemini.time.sleep", lambda delay: None)
 
     result = client.call_json("prompt", "stage", lambda data: None, max_attempts=3)
@@ -61,7 +74,7 @@ def test_call_retries_until_a_valid_success(monkeypatch):
 
 def test_call_stops_after_attempt_limit(monkeypatch):
     client = GeminiClient("key", "model")
-    monkeypatch.setattr(client, "_request", lambda prompt: _payload("bad"))
+    monkeypatch.setattr(client, "_request", lambda prompt, stage: _function_payload("bad"))
     monkeypatch.setattr("canrun.gemini.time.sleep", lambda delay: None)
 
     with pytest.raises(GeminiError, match="failed after 2 attempts"):
@@ -81,7 +94,7 @@ def test_call_retries_with_search_specific_correction(monkeypatch):
         prompts.append(prompt)
         return next(responses)
 
-    monkeypatch.setattr(client, "_request", request)
+    monkeypatch.setattr(client, "_request", lambda prompt, stage: request(prompt))
     monkeypatch.setattr("canrun.gemini.time.sleep", lambda delay: None)
 
     result = client.call_json("base prompt", "stage", lambda data: None)
@@ -100,7 +113,7 @@ def test_call_retries_with_citation_specific_correction(monkeypatch):
     monkeypatch.setattr(
         client,
         "_request",
-        lambda prompt: prompts.append(prompt) or next(responses),
+        lambda prompt, stage: prompts.append(prompt) or next(responses),
     )
     monkeypatch.setattr("canrun.gemini.time.sleep", lambda delay: None)
 
@@ -113,7 +126,7 @@ def test_citations_without_search_invocation_are_rejected(monkeypatch):
     client = GeminiClient("key", "model")
     payload = _payload('{"ok": true}')
     payload["steps"] = [step for step in payload["steps"] if step["type"] != "google_search_call"]
-    monkeypatch.setattr(client, "_request", lambda prompt: payload)
+    monkeypatch.setattr(client, "_request", lambda prompt, stage: payload)
     monkeypatch.setattr("canrun.gemini.time.sleep", lambda delay: None)
 
     with pytest.raises(GeminiError, match="did not invoke Google Search"):
@@ -132,6 +145,7 @@ def test_both_stage_prompts_require_google_search():
     for prompt in (requirements, performance):
         assert "MANDATORY: invoke the google_search tool" in prompt
         assert "URLs will be rejected" in prompt
+        assert "call submit_grounded_result exactly once" in prompt
 
 
 def test_request_uses_interactions_api(monkeypatch):
@@ -152,14 +166,32 @@ def test_request_uses_interactions_api(monkeypatch):
     monkeypatch.setattr(urllib.request, "urlopen", urlopen)
     client = GeminiClient("key", "gemini-3.6-flash", timeout=12)
 
-    client._request("research this")
+    client._request("research this", "requirements research")
 
     request = captured["request"]
     assert request.full_url == "https://generativelanguage.googleapis.com/v1/interactions"
     assert captured["timeout"] == 12
     assert request.get_header("X-goog-api-key") == "key"
-    assert json.loads(request.data) == {
-        "model": "gemini-3.6-flash",
-        "input": "research this",
-        "tools": [{"type": "google_search", "search_types": ["web_search"]}],
+    body = json.loads(request.data)
+    assert body["model"] == "gemini-3.6-flash"
+    assert body["input"] == "research this"
+    assert body["tools"][0] == {
+        "type": "google_search",
+        "search_types": ["web_search"],
     }
+    assert body["tools"][1]["name"] == "submit_grounded_result"
+    assert body["generation_config"] == {
+        "tool_choice": {
+            "allowed_tools": {
+                "mode": "any",
+                "tools": ["submit_grounded_result"],
+            }
+        }
+    }
+
+
+def test_forced_grounding_rejects_models_without_tool_combination():
+    client = GeminiClient("key", "gemini-2.5-flash-lite")
+
+    with pytest.raises(GeminiError, match="select a Gemini 3 model"):
+        client._request("research this")
