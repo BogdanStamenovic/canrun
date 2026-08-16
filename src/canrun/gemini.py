@@ -226,7 +226,6 @@ class GeminiClient:
             "model": self.model,
             "input": prompt,
             "tools": [{"type": "google_search", "search_types": ["web_search"]}],
-            "generation_config": {"tool_choice": "any"},
         }
         request = urllib.request.Request(
             url,

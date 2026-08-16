@@ -10,6 +10,7 @@ from canrun.gemini import (
     InvalidGeminiResponse,
     extract_json,
 )
+from canrun.prompts import performance_prompt, requirements_prompt
 
 
 def _payload(text):
@@ -124,6 +125,15 @@ def test_invalid_non_object_json_is_rejected():
         extract_json(json.dumps([1, 2]))
 
 
+def test_both_stage_prompts_require_google_search():
+    requirements = requirements_prompt("Demo", "Linux")
+    performance = performance_prompt("Demo", {}, {}, {}, "1080p", "medium")
+
+    for prompt in (requirements, performance):
+        assert "MANDATORY: invoke the google_search tool" in prompt
+        assert "URLs will be rejected" in prompt
+
+
 def test_request_uses_interactions_api(monkeypatch):
     captured = {}
 
@@ -152,5 +162,4 @@ def test_request_uses_interactions_api(monkeypatch):
         "model": "gemini-3.6-flash",
         "input": "research this",
         "tools": [{"type": "google_search", "search_types": ["web_search"]}],
-        "generation_config": {"tool_choice": "any"},
     }

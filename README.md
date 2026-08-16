@@ -91,10 +91,12 @@ canrun config set-model gemini-3.6-flash
 canrun config clear-key
 ```
 
-The default is `gemini-3.6-flash`. Can Run uses Google's Interactions API, forces the model to
-invoke Google Web Search for both research stages, and accepts a stage only when the response also
-contains cited URLs. Retries tell Gemini whether it skipped Search, omitted citations, or returned
-invalid output instead of repeating the same prompt unchanged.
+The default is `gemini-3.6-flash`. Can Run uses Google's Interactions API and explicitly instructs
+the model to invoke Google Web Search for both research stages. The API does not expose a mandatory
+mode for its built-in Search tool, so Can Run enforces this at the result boundary: it accepts a
+stage only when the response proves a Search invocation and contains cited URLs. Retries tell
+Gemini whether it skipped Search, omitted citations, or returned invalid output instead of
+repeating the same prompt unchanged.
 Gemini availability, quotas, and pricing can change, so the model is configurable.
 See Google's [Gemini pricing](https://ai.google.dev/gemini-api/docs/pricing) and
 [Search grounding](https://ai.google.dev/gemini-api/docs/google-search) documentation for current
